@@ -17,7 +17,7 @@ use std::io;
 use std::iter::FusedIterator;
 use std::ops::{Deref, DerefMut, Drop};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{self, AtomicBool, Ordering};
 
 use SplitMut;
 
@@ -115,8 +115,9 @@ where
                 .0
                 .as_ref()
                 .should_drop_value
-                .swap(true, Ordering::AcqRel)
+                .swap(true, Ordering::Release)
             {
+                atomic::fence(Ordering::Acquire);
                 drop(Box::from_raw(self.0.as_ptr()));
             }
         }
