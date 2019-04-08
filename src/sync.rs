@@ -6,7 +6,7 @@
 
 //! Thread-safe version of the split mechanism.
 //!
-//! See the [`split`](fn.split.html) function for more details.
+//! See the [`split_with`](fn.split_with.html) function for more details.
 
 use std::borrow::{Borrow, BorrowMut};
 use std::cell::UnsafeCell;
@@ -18,8 +18,6 @@ use std::iter::FusedIterator;
 use std::ops::{Deref, DerefMut, Drop};
 use std::ptr::NonNull;
 use std::sync::atomic::{self, AtomicBool, Ordering};
-
-use SplitMut;
 
 /// Splits a value into two owned parts.
 ///
@@ -38,18 +36,57 @@ use SplitMut;
 /// # Example
 ///
 /// ```
-/// use moite_moite::sync;
+/// use moite_moite::sync::{Part, split_with};
+/// use std::ops::Drop;
 ///
-/// let (mut left, right) = sync::split(("hello".to_owned(), "!".to_owned()));
-/// left.push_str(", world");
-/// assert_eq!(format!("{}{}", left, right), "hello, world!");
+/// struct Target<L, R>(Option<(L, R)>);
+///
+/// struct PairCell<'t, L, R> {
+///     target: &'t mut Option<(L, R)>,
+///     left: Option<L>,
+///     right: Option<R>,
+/// }
+///
+/// impl<'t, L, R> PairCell<'t, L, R> {
+///     fn split(self) -> (Part<Option<L>, Self>, Part<Option<R>, Self>) {
+///         split_with(self, |this| (&mut this.left, &mut this.right))
+///     }
+/// }
+///
+/// impl<'t, L, R> Drop for PairCell<'t, L, R> {
+///     fn drop(&mut self) {
+///         let left = self.left.take().expect("no left");
+///         let right = self.right.take().expect("no right");
+///
+///         *self.target = Some((left, right));
+///     }
+/// }
+///
+/// let mut target = Target(None);
+/// {
+///     let cell = PairCell {
+///         target: &mut target.0,
+///         left: None,
+///         right: None,
+///     };
+///
+///     let (mut left, mut right) = cell.split();
+///
+///     *left = Some("Ram");
+///     *right = Some("Rem");
+/// }
+///
+/// let (left, right) = target.0.expect("Where are the twin maids?");
+///
+/// assert_eq!(left, "Ram");
+/// assert_eq!(right, "Rem");
 /// ```
 #[inline]
-pub fn split<L, R, W>(value: W) -> (Part<L, W>, Part<R, W>)
+pub fn split_with<L, R, W, F>(value: W, f: F) -> (Part<L, W>, Part<R, W>)
 where
     L: ?Sized,
     R: ?Sized,
-    W: SplitMut<L, R>,
+    F: FnOnce(&mut W) -> (&mut L, &mut R),
 {
     let holder = Box::new(WholeCell {
         should_drop_value: AtomicBool::new(false),
@@ -57,7 +94,7 @@ where
     });
 
     let (left, right) = {
-        let (left, right) = unsafe { &mut *holder.value.get() }.split_mut();
+        let (left, right) = f(unsafe { &mut *holder.value.get() });
         (left as *mut _, right as *mut _)
     };
     let holder = NonNull::new(Box::into_raw(holder)).expect("never null");
@@ -72,28 +109,15 @@ where
     (left, right)
 }
 
-/// A part of a split value, itself splittable.
+/// A part of a split value.
 ///
 /// Mutably derefs to `T`.
 ///
-/// See the [`split`](fn.split.html) function for more details.
+/// See the [`split_with`](fn.split_with.html) function for more details.
 pub struct Part<T: ?Sized, W: ?Sized> {
     #[allow(dead_code)]
     whole: WholeRef<W>,
     ptr: NonNull<T>,
-}
-
-impl<L, R, T, W> SplitMut<L, R> for Part<T, W>
-where
-    L: ?Sized,
-    R: ?Sized,
-    T: SplitMut<L, R> + ?Sized,
-    W: ?Sized,
-{
-    #[inline]
-    fn split_mut(&mut self) -> (&mut L, &mut R) {
-        (**self).split_mut()
-    }
 }
 
 #[repr(transparent)]
